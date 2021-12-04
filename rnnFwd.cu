@@ -1,10 +1,11 @@
 
 #include <cmath>
+#include <math.h>
 
 // A is a by b
 // B is b by c
 // AB is a by c
-void matmul (float* A, float* B, flaot* AB, int a, int b, int c) {
+void matmul (float* A, float* B, float* AB, int a, int b, int c) {
 
     for (int i = 0; i < a; i++) {
         for (int k = 0; k < c; k++) {
@@ -45,10 +46,27 @@ void vectorTanh (float* A, float* ret, int a, int b) {
     }
 }
 
+void vectorSoftmax(float* src, float* dest, int a, int b) {
+    float denom = 0;
+    
+    //PROBLEM if b is not 1 here
+    
+    for (int = 0; i < a; i++) {
+        denom += exp(src[i]);
+    }
+
+    for (int i = 0; i < a; i++) {
+        dest[i] = src[i] / denom;
+    }
+
+    return;
+}
+
 __global__
 void kernelComputeForward (float* device_x, float* device_a, float* device_h, float* device_o, 
-                            float* device_y, int hsize, int vsize, float* W, float* U, float* V) {
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
+                            float* device_y, int hsize, int vsize, float* W, float* U, float* V,
+                            float* c) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x; // time index
 
     if (index > 0) {
         while (device_h[index * (hsize - 1)] == -1) ;
@@ -74,7 +92,7 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
     float* x_t = calloc(vsize, sizeof(float));
     getExcerpt(device_x, x_t, index, vsize);
     float* U_x = calloc(hsize, sizeof(float));
-    matmul(U, x_t, hsize, vsize, 1);
+    matmul(U, x_t, U_x, hsize, vsize, 1);
     // 1: addition of b
     float* add1 = calloc(hsize, sizeof(float));
     vectorAdd(U_x, b, add1, hsize, 1);
@@ -86,14 +104,35 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
     free(U_x);
     free(add1);
     setExcerpt(device_a, a_t, index, hsize);
-    // free(a_t); ?
+    // free(a_t) LATER
 
     // a_t has the result for the next layer (h)
     // 2: tanh of vector for a_t
     float* h_t = calloc(hsize, sizeof(float));
     vectorTanh(a_t, h_t, hsize, 1);
     setExcerpt(device_h, h_t, index, hsize);
-    // free(h_t); ?
+    // free(h_t) LATER
+
+    // h_t has the result for the next layer(o)
+    // 3: addition of V*h and c
+    float* V_h = calloc(vsize, sizeof(float));
+    matmul(V, h_t, V_h, vsize, hsize, 1);
+    float* o_t = calloc(hsize, sizeof(float));
+    vectorAdd(c, V_h, o_t, hsize, 1);
+    setExcerpt(device_o, o_t, index, hsize);
+    // free(o_t) LATER
+
+    // o_t has the result for the next layer(o)
+    // 4: softmax(o_t)
+    float* y_t = calloc(vsize, sizeof(float));
+    vectorSoftmax(o_t, y_t, vsize, 1);
+    setExcerpt(device_y, y_y, index, vsize);
+    
+    free(a_t);
+    free(h_t);
+    free(o_t);
+    free(y_t);
+    return;
 
 }
 
@@ -126,6 +165,7 @@ double cudaForwardPassTimer (float* x, float* y, float* W, float* V, float* W,
 
       parameters:
         b: hsize    by        1
+        c: vsize    by        1
         U: hsize    by        vsize
         V: vsize    by        hsize
         W: hsize    by        hsize
@@ -135,7 +175,7 @@ double cudaForwardPassTimer (float* x, float* y, float* W, float* V, float* W,
     cudaMalloc((void**) &device_x, sizeof(int) * vsize * T);
     cudaMalloc((void**) &device_a, sizeof(int) * hsize * T);
     cudaMalloc((void**) &device_h, sizeof(int) * hsize * T);
-    cudaMalloc((void**) &device_o, sizeof(int) * vsize * T)
+    cudaMalloc((void**) &device_o, sizeof(int) * vsize * T);
     cudaMalloc((void**) &device_y, sizeof(int) * vsize * T);
 
     double startTime = CycleTimer::currentSeconds();
