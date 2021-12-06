@@ -7,9 +7,6 @@
 double cudaForwardPassTimer (float* x, float* y, float* U_host, float* V_host, float* W_host,
                               float* b_host, float* c_host, int vsize, int hsize, int T);
 
-double cudaSequentialForwardPassTimer (float* x, float* y, float* U_host, float* V_host, float* W_host,
-                              float* b_host, float* c_host, int vsize, int hsize, int T);
-
 void supply_rand_val (float* addr) {
     float ret = static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
     *addr = ret;
@@ -63,7 +60,7 @@ void init_input_values (float* x, int vsize, int timesteps) {
 
 }
 
-float test (int hsize, int vsize, int timesteps, int use_sequential) {
+float test (int hsize, int vsize, int timesteps) {
 
     float* x = (float*) calloc(vsize * timesteps, sizeof(float));
     float* y = (float*) calloc(vsize * timesteps, sizeof(float));
@@ -77,22 +74,9 @@ float test (int hsize, int vsize, int timesteps, int use_sequential) {
                                                     // could plausibly be computed during training
 
     init_input_values(x, vsize, timesteps);
-    
-    float duration  = 0;
-    if (use_sequential) {
-        duration = cudaSequentialForwardPassTimer (x, y, U, V, W, b, c, 
-                                                vsize, hsize, timesteps);
-    } else { 
-        duration = cudaForwardPassTimer (x, y, U, V, W, b, c, 
-                                                vsize, hsize, timesteps);
-    }
 
-    free(x);
-    free(U);
-    free(V);
-    free(W);
-    free(b);
-    free(c);
+    float duration = openmp_fwd_pass(x, y, U, V, W, b, c, 
+                                            vsize, hsize, timesteps);
 
     return duration;
 
@@ -106,14 +90,8 @@ int main() {
 
     fprintf(stdout, "beginning test ... \n");
     fflush(stdout);
-    float duration = test(hsize, vsize, timesteps, 0);
-    fprintf(stdout, "result duration (parallel): %f\n", duration);
-    fflush(stdout);
-
-    fprintf(stdout, "beginning test ... \n");
-    fflush(stdout);
-    duration = test(hsize, vsize, timesteps, 1);
-    fprintf(stdout, "result duration (sequential): %f\n", duration);
+    float duration = test(hsize, vsize, timesteps);
+    fprintf(stdout, "result duration: %f\n", duration);
     fflush(stdout);
 
     // print
