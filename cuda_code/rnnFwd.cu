@@ -162,6 +162,23 @@ void forwardPass (float* device_x, float* device_a, float* device_h, float* devi
                                                         hsize, vsize);
 }
 
+__global__
+void kernelSetToVal (float* A, int n, float val) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= n) {
+        return;
+    }
+    A[index] = val;
+}
+
+void setToVal (float* A, int n, float val) {
+    const int threadsPerBlock = 512;
+    const int blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+
+    kernelSetToVal<<< blocks, threadsPerBlock >>>(A, n, val);
+
+}
+
 double cudaForwardPassTimer (float* x, float* y, float* U_host, float* V_host, float* W_host,
                               float* b_host, float* c_host, int vsize, int hsize, int T) {
     float* device_x;
@@ -195,6 +212,9 @@ double cudaForwardPassTimer (float* x, float* y, float* U_host, float* V_host, f
     cudaMalloc((void**) &device_h, sizeof(float) * hsize * T);
     cudaMalloc((void**) &device_o, sizeof(float) * vsize * T);
     cudaMalloc((void**) &device_y, sizeof(float) * vsize * T);
+
+    // set all hidden layers' values (across all timesteps) to -1 to enforce waiting
+    setToVal(device_h, hsize * T, -1.f);
 
     // declare, alloc, and copy onto device the init paramters
     float* b;
