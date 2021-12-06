@@ -94,19 +94,13 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
     //                  W_h_term + U_x_term
 
     // 1a. the W_h term
-    // float* h_tminus1 = (float*) calloc(hsize, sizeof(float));
     getExcerpt(device_h, h_tminus1, index-1, hsize);    
-    // float* W_h = (float*) calloc(hsize, sizeof(float));
     matmul(W, h_tminus1, W_h, hsize, hsize, 1);
     // 1b. the ux term
-    // float* x_t = (float*) calloc(vsize, sizeof(float));
     getExcerpt(device_x, x_t, index, vsize);
-    // float* U_x = (float*) calloc(hsize, sizeof(float));
     matmul(U, x_t, U_x, hsize, vsize, 1);
     // 1: addition of b
-    // float* add1 = (float*) calloc(hsize, sizeof(float));
     vectorAdd(U_x, b, add1, hsize, 1);
-    // float* a_t = (float*) calloc(vsize, sizeof(float));
     vectorAdd(add1, W_h, a_t, hsize, 1);
 
     free(h_tminus1);
@@ -118,23 +112,19 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
 
     // a_t has the result for the next layer (h)
     // 2: tanh of vector for a_t
-    // float* h_t = (float*) calloc(hsize, sizeof(float));
     vectorTanh(a_t, h_t, hsize, 1);
     setExcerpt(device_h, h_t, index, hsize);
     // free(h_t) LATER
 
     // h_t has the result for the next layer(o)
     // 3: addition of V*h and c
-    // float* V_h = (float*) calloc(vsize, sizeof(float));
     matmul(V, h_t, V_h, vsize, hsize, 1);
-    // float* o_t = (float*) calloc(hsize, sizeof(float));
     vectorAdd(c, V_h, o_t, hsize, 1);
     setExcerpt(device_o, o_t, index, hsize);
     // free(o_t) LATER
 
     // o_t has the result for the next layer(o)
     // 4: softmax(o_t)
-    // float* y_t = (float*) calloc(vsize, sizeof(float));
     vectorSoftmax(o_t, y_t, vsize, 1);
     setExcerpt(device_y, y_t, index, vsize);
     

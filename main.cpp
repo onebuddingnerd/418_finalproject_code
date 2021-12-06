@@ -24,17 +24,23 @@ void init_param_values (float* U, float* V, float* W, float* b,
     
     for (int i1 = 0; i1 < max(hsize, vsize); i1++) {
 
+        // fprintf(stdout, "%d of %d outerloop: begun\n", i1, max(hsize, vsize));
+        // fflush(stdout);
+
         for (int i2 = 0; i2 < max(hsize, vsize); i2++) {
             if (i1 < hsize && i2 < vsize) {
-                supply_rand_val(&U[i1*hsize + i2]);
+                supply_rand_val(&U[i1*vsize + i2]);
             }
             if (i1 < vsize && i2 < hsize) {
-                supply_rand_val(&V[i1*vsize + i2]);
+                supply_rand_val(&V[i1*hsize + i2]);
             }
             if (i1 < hsize && i2 < hsize) {
                 supply_rand_val(&W[i1*hsize + i2]);
             }
         }
+
+        // fprintf(stdout, "%d of %d outerloop: completed innerloop\n", i1, max(hsize, vsize));
+        // fflush(stdout);
 
         if (i1 < hsize) {
             supply_rand_val(&b[i1]);
@@ -57,8 +63,7 @@ void init_input_values (float* x, int vsize, int timesteps) {
 float test (int hsize, int vsize, int timesteps) {
 
     float* x = (float*) calloc(vsize * timesteps, sizeof(float));
-    float* y = (float* )calloc(vsize * timesteps, sizeof(float));
-
+    float* y = (float*) calloc(vsize * timesteps, sizeof(float));
     float* U = (float*) calloc(hsize * vsize, sizeof(float));
     float* V = (float*) calloc(vsize * hsize, sizeof(float));
     float* W = (float*) calloc(hsize * hsize, sizeof(float));
@@ -81,10 +86,13 @@ int main() {
 
     int hsize = 30;
     int vsize = 8000; // change for testing; these are typical
-    int timesteps = 500;
+    int timesteps = 50000;
 
+    fprintf(stdout, "beginning test ... \n");
+    fflush(stdout);
     float duration = test(hsize, vsize, timesteps);
-    fprintf(stderr, "result duration: %f\n", duration);
+    fprintf(stdout, "result duration: %f\n", duration);
+    fflush(stdout);
 
     // print
     return 0;
