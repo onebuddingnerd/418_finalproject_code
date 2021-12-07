@@ -102,7 +102,7 @@ int main() {
 
     int hsize = 30;
     int vsize = 8000; // change for testing; these are typical
-    int timesteps = 50000;
+    int timesteps = 5;
 
     fprintf(stdout, "beginning test ... \n");
     fflush(stdout);
