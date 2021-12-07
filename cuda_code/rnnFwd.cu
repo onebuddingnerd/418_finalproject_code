@@ -18,10 +18,6 @@ inline void cudaAssert(cudaError_t code, const char *file, int line, bool abort=
 #define cudaCheckError(ans) ans
 #endif
 
-#define TIMESTEPS 5
-#define HSIZE 30
-#define VSIZE 8000
-
 // A is a by b
 // B is b by c
 // AB is a by c
@@ -158,9 +154,9 @@ float atomicCAS_f32_verbose(float *p, float cmp, float val, int thd_index) {
 __global__
 void kernelComputeForward (float* device_x, float* device_a, float* device_h, float* device_o, 
                             float* device_y, float* U, float* V, float* W, float* b, float* c,
-                            float* h_tminus1, float* W_h, float* x_t, float* U_x, float* add1,
-                            float* a_t, float* h_t, float* V_h, float* o_t, float* y_t,
-                            int threadsPerBlock, 
+                            float* h_tminus1_all, float* W_h_all, float* U_x_all, float* add1_all,
+                            float* a_t_all, float* h_t_all, float* V_h_all, float* o_t_all, float* y_t_all,
+                            int hsize, int vsize, int timesteps, int threadsPerBlock, 
                             int sequential_index) {
     int index = 0;
     
@@ -169,18 +165,26 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
     } else {
         index = blockIdx.x * blockDim.x + threadIdx.x; // time index
         if(index == 0){
-            printf("Thread %d executing, TIMESTEPS: %d\n", index, TIMESTEPS);
+            printf("Thread %d executing, timesteps: %d\n", index, timesteps);
         }
-        if (index >= TIMESTEPS || index == 0) {
+        if (index >= timesteps || index == 0) {
             return;
         }
     }
 
-    // note: now threadsPerBlock = TIMESTEPS
-    __shared__ float h_shared[HSIZE * threadsPerBlock];
-    
+    float* h_tminus1 = &h_tminus1_all[index*hsize];
+    float* W_h = &W_h_all[index*vsize];
+    float* U_x = &U_x_all[index*hsize];
+    float* add1 = &add1_all[index*hsize];
+    float* a_t = &a_t_all[index*vsize];
+    float* h_t = &h_t_all[index*hsize];
+    float* V_h = &a_t_all[index*vsize];
+    float* o_t = &o_t_all[index*hsize];
+    float* y_t = &y_t_all[index*vsize];
+
+    // __shared__ float h_shared[hsize * threadsPerBlock];
     // if (index % threadsPerBlock == 0) {
-    //     for (int i = 0; i < min(threadsPerBlock, TIMESTEPS - index)) {
+    //     for (int i = 0; i < min(threadsPerBlock, timesteps - index)) {
     //         h_shared[i]
     //     }
     // }
@@ -189,17 +193,17 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
 
     printf("Thread %d right before if statement\n", index);
     if (index > 0) {
-        printf("At time index %d, (HSIZE - 1) * index = %d, device_h is: %f\n", index, index * (HSIZE - 1), device_h[index * (HSIZE - 1)]);
+        printf("At time index %d, (hsize - 1) * index = %d, device_h is: %f\n", index, index * (hsize - 1), device_h[index * (hsize - 1)]);
         // int loopcount = 0;
-        // while (device_h[index * (HSIZE - 1)] == -1.f) {
-        while ( atomicCAS_f32(&device_h[index * (HSIZE - 1)], -1.f, -1.f) == -1 ) {
-            // printf("thd %d waiting for %f to change to naything other than -1\n", index, device_h[index * (HSIZE - 1)]);
+        // while (device_h[index * (hsize - 1)] == -1.f) {
+        while ( atomicCAS_f32(&device_h[index * (hsize - 1)], -1.f, -1.f) == -1 ) {
+            // printf("thd %d waiting for %f to change to naything other than -1\n", index, device_h[index * (hsize - 1)]);
             //spin_little();
             kernelSleep(10000);
         }
-        // while ( atomicCAS(&device_h[index * (HSIZE - 1)], -1.f, -1.f) == -1 ) ; 
+        // while ( atomicCAS(&device_h[index * (hsize - 1)], -1.f, -1.f) == -1 ) ; 
         printf("thd %d: exiting waitloop\n ", index);
-        printf("thd %d: %f is checkval\n", index, device_h[index * (HSIZE - 1)] );
+        printf("thd %d: %f is checkval\n", index, device_h[index * (hsize - 1)] );
     }  // spin til prev timestep's h-level vector has nondefault value (which indicates that the computation is pending
     printf("Thread %d completed spin\n", index);
     
@@ -209,62 +213,59 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
     // o[t] = c + V * h[t]
     // y[t] = softmax(o[t])
     
-    // W_h_term =  device_W ** device_h[index * HSIZE : (index+1) * HSIZE]
-    // U_x_term = device_U ** device_x[index * VSIZE : (index+1) * VSIZE]
-    // device_a[index * HSIZE : (index+1) * HSIZE] = device_b + 
+    // W_h_term =  device_W ** device_h[index * hsize : (index+1) * hsize]
+    // U_x_term = device_U ** device_x[index * vsize : (index+1) * vsize]
+    // device_a[index * hsize : (index+1) * hsize] = device_b + 
     //                  W_h_term + U_x_term
 
     // 1a. the W_h term
     if (index >= 1) {
-        getExcerpt(device_h, h_tminus1, index-1, HSIZE);
+        getExcerpt(device_h, h_tminus1, index-1, hsize);
     } else {
-        initOnes(h_tminus1, HSIZE, 1);
+        initOnes(h_tminus1, hsize, 1);
     }   
     printf("%d-indexed thd completed getExcerpt (of step 1 for global h)\n", index); 
-    matmul(W, h_tminus1, W_h, HSIZE, HSIZE, 1);
+    matmul(W, h_tminus1, W_h, hsize, hsize, 1);
     printf("%d-indexed thd completed matmul of W and h_tminus1\n", index);
     // 1b. the ux term
-    getExcerpt(device_x, x_t, index, VSIZE);
-    matmul(U, x_t, U_x, HSIZE, VSIZE, 1);
+    // getExcerpt(device_x, x_t, index, vsize);
+    float* x_t = &device_x[vsize*index];
+    matmul(U, x_t, U_x, hsize, vsize, 1);
     // 1: addition of b
-    vectorAdd(U_x, b, add1, HSIZE, 1);
-    vectorAdd(add1, W_h, a_t, HSIZE, 1);
+    vectorAdd(U_x, b, add1, hsize, 1);
+    vectorAdd(add1, W_h, a_t, hsize, 1);
     printf("%d-indexed thd completed comp1\n", index);
 
     // free(h_tminus1);
     // free(W_h);
     // free(U_x);
     // free(add1);
-    // setExcerpt(device_a, a_t, index, HSIZE);
+    // setExcerpt(device_a, a_t, index, hsize);
     // free(a_t) LATER
 
     // a_t has the result for the next layer (h)
     // 2: tanh of vector for a_t
-    vectorTanh(a_t, h_t, HSIZE, 1);
-    // setExcerpt(device_h, h_t, index, HSIZE);
-    for (int i = 0; i < HSIZE; i++) {
-        h_shared[TIMESTEPS*index + i] = h_t[i]
-    }
-
+    vectorTanh(a_t, h_t, hsize, 1);
+    setExcerpt(device_h, h_t, index, hsize);
     if (index == 1) {
         printf("printing setting of thd 1\n");
-        print_excerpt(device_h, index*HSIZE, (index+1)*HSIZE);
+        print_excerpt(device_h, index*hsize, (index+1)*hsize);
     }
     printf("%d-indexed thd completed comp2\n", index);
     // free(h_t) LATER
 
     // h_t has the result for the next layer(o)
     // 3: addition of V*h and c
-    matmul(V, h_t, V_h, VSIZE, HSIZE, 1);
-    vectorAdd(c, V_h, o_t, HSIZE, 1);
-    // setExcerpt(device_o, o_t, index, HSIZE);
+    matmul(V, h_t, V_h, vsize, hsize, 1);
+    vectorAdd(c, V_h, o_t, hsize, 1);
+    // setExcerpt(device_o, o_t, index, hsize);
     printf("%d-indexed thd completed comp3\n", index);
     // free(o_t) LATER
 
     // o_t has the result for the next layer(o)
     // 4: softmax(o_t)
-    vectorSoftmax(o_t, y_t, VSIZE, 1);
-    setExcerpt(device_y, y_t, index, VSIZE);
+    vectorSoftmax(o_t, y_t, vsize, 1);
+    setExcerpt(device_y, y_t, index, vsize);
     printf("%d-indexed thd completed comp4\n", index);
     
     // free(a_t);
@@ -277,63 +278,65 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
 
 
 void forwardPass (float* device_x, float* device_a, float* device_h, float* device_o, 
-                  float* device_y, float* U, float* V, float* W, float* b, float* c) {
-    const int threadsPerBlock = TIMESTEPS;
-    const int blocks = 1;
+                  float* device_y, float* U, float* V, float* W, float* b, float* c,
+                  int hsize, int vsize, int T) {
+    const int threadsPerBlock = 2;
+    const int blocks = (T + threadsPerBlock - 1) / threadsPerBlock;
 
     // intermediate term
-    float* h_tminus1; // = (float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &h_tminus1, HSIZE * sizeof(float));
-    float* W_h; // = (float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &W_h, HSIZE * sizeof(float));
-    float* x_t; // = (float*) calloc(VSIZE, sizeof(float));
-    cudaMalloc((void**) &x_t, VSIZE * sizeof(float));
-    float* U_x; // = (float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &U_x, HSIZE * sizeof(float));
-    float* add1; //= //(float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &add1, HSIZE * sizeof(float));
-    float* a_t; //= (float*) calloc(VSIZE, sizeof(float));
-    cudaMalloc((void**) &a_t, VSIZE * sizeof(float));
-    float* h_t; // = (float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &h_t, HSIZE * sizeof(float));
-    float* V_h; // = (float*) calloc(VSIZE, sizeof(float));
-    cudaMalloc((void**) &V_h, VSIZE * sizeof(float));
-    float* o_t;  //= (float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &o_t, HSIZE * sizeof(float));
-    float* y_t; //= (float*) calloc(VSIZE, sizeof(float));
-    cudaMalloc((void**) &y_t, VSIZE * sizeof(float)); 
+    float* h_tminus1; // = (float*) calloc(hsize, sizeof(float));
+    cudaMalloc((void**) &h_tminus1, hsize * T * sizeof(float));
+    float* W_h; // = (float*) calloc(hsize, sizeof(float));
+    cudaMalloc((void**) &W_h, hsize * sizeof(float));
+    //float* x_t; // = (float*) calloc(vsize, sizeof(float));
+    //cudaMalloc((void**) &x_t, vsize * T * sizeof(float));
+    float* U_x; // = (float*) calloc(hsize, sizeof(float));
+    cudaMalloc((void**) &U_x, hsize * T * sizeof(float));
+    float* add1; //= //(float*) calloc(hsize, sizeof(float));
+    cudaMalloc((void**) &add1, hsize * sizeof(float));
+    float* a_t; //= (float*) calloc(vsize, sizeof(float));
+    cudaMalloc((void**) &a_t, vsize * T * sizeof(float));
+    float* h_t; // = (float*) calloc(hsize, sizeof(float));
+    cudaMalloc((void**) &h_t, hsize * T * sizeof(float));
+    float* V_h; // = (float*) calloc(vsize, sizeof(float));
+    cudaMalloc((void**) &V_h, vsize * T * sizeof(float));
+    float* o_t;  //= (float*) calloc(hsize, sizeof(float));
+    cudaMalloc((void**) &o_t, hsize * T * sizeof(float));
+    float* y_t; //= (float*) calloc(vsize, sizeof(float));
+    cudaMalloc((void**) &y_t, vsize * T * sizeof(float)); 
 
     kernelComputeForward<<< blocks, threadsPerBlock >>>(device_x, device_a, device_h, 
                                                         device_o, device_y, U, V, W, b, c, 
-                                                        h_tminus1, W_h, x_t, U_x,
+                                                        h_tminus1, W_h, U_x,
                                                         add1, a_t, h_t, V_h, o_t, y_t,
-                                                        threadsPerBlock,
+                                                        hsize, vsize, T, threadsPerBlock,
                                                         -1);
 }
 
 void forwardPassSequential (float* device_x, float* device_a, float* device_h, float* device_o, 
-                  float* device_y, float* U, float* V, float* W, float* b, float* c) {
+                  float* device_y, float* U, float* V, float* W, float* b, float* c,
+                  int hsize, int vsize, int T) {
     const int threadsPerBlock = 1;
     const int blocks = 1;
 
     // intermediate terms
-    float* h_tminus1 = (float*) calloc(HSIZE, sizeof(float));
-    float* W_h = (float*) calloc(HSIZE, sizeof(float));
-    float* x_t = (float*) calloc(VSIZE, sizeof(float));
-    float* U_x = (float*) calloc(HSIZE, sizeof(float));
-    float* add1 = (float*) calloc(HSIZE, sizeof(float));
-    float* a_t = (float*) calloc(VSIZE, sizeof(float));
-    float* h_t = (float*) calloc(HSIZE, sizeof(float));
-    float* V_h = (float*) calloc(VSIZE, sizeof(float));
-    float* o_t = (float*) calloc(HSIZE, sizeof(float));
-    float* y_t = (float*) calloc(VSIZE, sizeof(float));
+    float* h_tminus1 = (float*) calloc(hsize * T, sizeof(float));
+    float* W_h = (float*) calloc(hsize * T, sizeof(float));
+    //float* x_t = (float*) calloc(vsize * T, sizeof(float));
+    float* U_x = (float*) calloc(hsize * T, sizeof(float));
+    float* add1 = (float*) calloc(hsize * T, sizeof(float));
+    float* a_t = (float*) calloc(vsize * T, sizeof(float));
+    float* h_t = (float*) calloc(hsize * T, sizeof(float));
+    float* V_h = (float*) calloc(vsize * T, sizeof(float));
+    float* o_t = (float*) calloc(hsize * T, sizeof(float));
+    float* y_t = (float*) calloc(vsize * T, sizeof(float));
 
     for (int i = 0; i < T; i++) {
         kernelComputeForward<<< blocks, threadsPerBlock >>>(device_x, device_a, device_h, 
                                                             device_o, device_y, U, V, W, b, c, 
-                                                            h_tminus1, W_h, x_t, U_x,
+                                                            h_tminus1, W_h, U_x,
                                                             add1, a_t, h_t, V_h, o_t, y_t,
-                                                            threadsPerBlock,
+                                                            hsize, vsize, T, threadsPerBlock,
                                                             i);
     }
 }
@@ -356,98 +359,98 @@ void setToValAfter (float* A, int n, float val, int offset) {
 }
 
 double cudaForwardPassTimer (float* x, float* y, float* U_host, float* V_host, float* W_host,
-                              float* b_host, float* c_host) {
+                              float* b_host, float* c_host, int vsize, int hsize, int T) {
     float* device_x;
-    cudaMalloc((void **)&device_x, sizeof(float) * VSIZE * TIMESTEPS);
-    cudaMemcpy(device_x, x, VSIZE * TIMESTEPS * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void **)&device_x, sizeof(float) * vsize * T);
+    cudaMemcpy(device_x, x, vsize * T * sizeof(float), cudaMemcpyHostToDevice);
 
     /* 
       shapes:
       inputs/intermediate/outputs:
-        x: VSIZE    by        1
-        a: HSIZE    by        1
-        h: HSIZE    by        1
-        o: VSIZE    by        1
-        y: VSIZE    by        1
+        x: vsize    by        1
+        a: hsize    by        1
+        h: hsize    by        1
+        o: vsize    by        1
+        y: vsize    by        1
 
       parameters:
-        b: HSIZE    by        1
-        c: VSIZE    by        1
-        U: HSIZE    by        VSIZE
-        V: VSIZE    by        HSIZE
-        W: HSIZE    by        HSIZE
+        b: hsize    by        1
+        c: vsize    by        1
+        U: hsize    by        vsize
+        V: vsize    by        hsize
+        W: hsize    by        hsize
 
     */
 
     // alloc result (and intermediate result) destinations
     float* device_a;
     // float* device_h;
-    float* h = (float*) calloc(HSIZE * TIMESTEPS, sizeof(float));
-    host_initOnes(h, HSIZE, 1);
+    float* h = (float*) calloc(hsize * T, sizeof(float));
+    host_initOnes(h, hsize, 1);
     float* device_o;
     float* device_y;
-    cudaMalloc((void**) &device_a, sizeof(float) * HSIZE * TIMESTEPS);
-    // cudaMalloc((void**) &device_h, sizeof(float) * HSIZE * TIMESTEPS);
-    cudaMalloc((void**) &device_o, sizeof(float) * VSIZE * TIMESTEPS);
-    cudaMalloc((void**) &device_y, sizeof(float) * VSIZE * TIMESTEPS);
+    cudaMalloc((void**) &device_a, sizeof(float) * hsize * T);
+    // cudaMalloc((void**) &device_h, sizeof(float) * hsize * T);
+    cudaMalloc((void**) &device_o, sizeof(float) * vsize * T);
+    cudaMalloc((void**) &device_y, sizeof(float) * vsize * T);
 
-    // set all hidden layers' values (across all TIMESTEPS) to -1 to enforce waiting
+    // set all hidden layers' values (across all timesteps) to -1 to enforce waiting
     float* device_h;
-    cudaMalloc((void **) &device_h, sizeof(float) * HSIZE * TIMESTEPS);
-    cudaMemcpy(device_h, h, sizeof(float) * HSIZE * TIMESTEPS, cudaMemcpyHostToDevice);
-    setToValAfter(device_h, HSIZE * TIMESTEPS, -1.f, HSIZE);
+    cudaMalloc((void **) &device_h, sizeof(float) * hsize * T);
+    cudaMemcpy(device_h, h, sizeof(float) * hsize * T, cudaMemcpyHostToDevice);
+    setToValAfter(device_h, hsize * T, -1.f, hsize);
 
     // declare, alloc, and copy onto device the init paramters
     float* b;
-    cudaMalloc((void**) &b, HSIZE * sizeof(float));
-    cudaMemcpy(b, b_host, HSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &b, hsize * sizeof(float));
+    cudaMemcpy(b, b_host, hsize * sizeof(float), cudaMemcpyHostToDevice);
     float* c;
-    cudaMalloc((void**) &c, VSIZE * sizeof(float));
-    cudaMemcpy(c, c_host, VSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &c, vsize * sizeof(float));
+    cudaMemcpy(c, c_host, vsize * sizeof(float), cudaMemcpyHostToDevice);
     float* U;
-    cudaMalloc((void**) &U, HSIZE * VSIZE * sizeof(float));
-    cudaMemcpy(U, U_host, HSIZE * VSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &U, hsize * vsize * sizeof(float));
+    cudaMemcpy(U, U_host, hsize * vsize * sizeof(float), cudaMemcpyHostToDevice);
     float* W;
-    cudaMalloc((void**) &W, HSIZE * HSIZE * sizeof(float));
-    cudaMemcpy(W, W_host, HSIZE * HSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &W, hsize * hsize * sizeof(float));
+    cudaMemcpy(W, W_host, hsize * hsize * sizeof(float), cudaMemcpyHostToDevice);
     float* V;
-    cudaMalloc((void**) &V, VSIZE * HSIZE * sizeof(float));
-    cudaMemcpy(V, V_host, VSIZE * HSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &V, vsize * hsize * sizeof(float));
+    cudaMemcpy(V, V_host, vsize * hsize * sizeof(float), cudaMemcpyHostToDevice);
 
     double startTime = CycleTimer::currentSeconds();
     forwardPass(device_x, device_a, device_h, device_o, device_y,
                 U, V, W, b, c,
-                HSIZE, VSIZE, TIMESTEPS);
+                hsize, vsize, T);
     // cudaThreadSynchronize();
     cudaCheckError( cudaDeviceSynchronize() );
     double endTime = CycleTimer::currentSeconds();
-    cudaMemcpy(y, device_y, VSIZE * TIMESTEPS * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(y, device_y, vsize * T * sizeof(float), cudaMemcpyDeviceToHost);
     double overallDuration = endTime - startTime;
     
     return overallDuration;
 }
 
 double cudaSequentialForwardPassTimer (float* x, float* y, float* U_host, float* V_host, float* W_host,
-                              float* b_host, float* c_host) {
+                              float* b_host, float* c_host, int vsize, int hsize, int T) {
     float* device_x;
-    cudaMalloc((void **)&device_x, sizeof(float) * VSIZE * TIMESTEPS);
-    cudaMemcpy(device_x, x, VSIZE * TIMESTEPS * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void **)&device_x, sizeof(float) * vsize * T);
+    cudaMemcpy(device_x, x, vsize * T * sizeof(float), cudaMemcpyHostToDevice);
 
     /* 
       shapes:
       inputs/intermediate/outputs:
-        x: VSIZE    by        1
-        a: HSIZE    by        1
-        h: HSIZE    by        1
-        o: VSIZE    by        1
-        y: VSIZE    by        1
+        x: vsize    by        1
+        a: hsize    by        1
+        h: hsize    by        1
+        o: vsize    by        1
+        y: vsize    by        1
 
       parameters:
-        b: HSIZE    by        1
-        c: VSIZE    by        1
-        U: HSIZE    by        VSIZE
-        V: VSIZE    by        HSIZE
-        W: HSIZE    by        HSIZE
+        b: hsize    by        1
+        c: vsize    by        1
+        U: hsize    by        vsize
+        V: vsize    by        hsize
+        W: hsize    by        hsize
 
     */
 
@@ -456,38 +459,38 @@ double cudaSequentialForwardPassTimer (float* x, float* y, float* U_host, float*
     float* device_h;
     float* device_o;
     float* device_y;
-    cudaMalloc((void**) &device_a, sizeof(float) * HSIZE * TIMESTEPS);
-    cudaMalloc((void**) &device_h, sizeof(float) * HSIZE * TIMESTEPS);
-    cudaMalloc((void**) &device_o, sizeof(float) * VSIZE * TIMESTEPS);
-    cudaMalloc((void**) &device_y, sizeof(float) * VSIZE * TIMESTEPS);
+    cudaMalloc((void**) &device_a, sizeof(float) * hsize * T);
+    cudaMalloc((void**) &device_h, sizeof(float) * hsize * T);
+    cudaMalloc((void**) &device_o, sizeof(float) * vsize * T);
+    cudaMalloc((void**) &device_y, sizeof(float) * vsize * T);
 
-    // set all hidden layers' values (across all TIMESTEPS) to -1 to enforce waiting
-    setToValAfter(device_h, HSIZE * TIMESTEPS, -1.f, 0); // CHANGE!!!!
+    // set all hidden layers' values (across all timesteps) to -1 to enforce waiting
+    setToValAfter(device_h, hsize * T, -1.f, 0); // CHANGE!!!!
 
     // declare, alloc, and copy onto device the init paramters
     float* b;
-    cudaMalloc((void**) &b, HSIZE * sizeof(float));
-    cudaMemcpy(b, b_host, HSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &b, hsize * sizeof(float));
+    cudaMemcpy(b, b_host, hsize * sizeof(float), cudaMemcpyHostToDevice);
     float* c;
-    cudaMalloc((void**) &c, VSIZE * sizeof(float));
-    cudaMemcpy(c, c_host, VSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &c, vsize * sizeof(float));
+    cudaMemcpy(c, c_host, vsize * sizeof(float), cudaMemcpyHostToDevice);
     float* U;
-    cudaMalloc((void**) &U, HSIZE * VSIZE * sizeof(float));
-    cudaMemcpy(U, U_host, HSIZE * VSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &U, hsize * vsize * sizeof(float));
+    cudaMemcpy(U, U_host, hsize * vsize * sizeof(float), cudaMemcpyHostToDevice);
     float* W;
-    cudaMalloc((void**) &W, HSIZE * HSIZE * sizeof(float));
-    cudaMemcpy(W, W_host, HSIZE * HSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &W, hsize * hsize * sizeof(float));
+    cudaMemcpy(W, W_host, hsize * hsize * sizeof(float), cudaMemcpyHostToDevice);
     float* V;
-    cudaMalloc((void**) &V, VSIZE * HSIZE * sizeof(float));
-    cudaMemcpy(V, V_host, VSIZE * HSIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &V, vsize * hsize * sizeof(float));
+    cudaMemcpy(V, V_host, vsize * hsize * sizeof(float), cudaMemcpyHostToDevice);
 
     double startTime = CycleTimer::currentSeconds();
     forwardPassSequential(device_x, device_a, device_h, device_o, device_y,
                 U, V, W, b, c,
-                VSIZE, HSIZE, TIMESTEPS);
+                vsize, hsize, T);
     cudaThreadSynchronize();
     double endTime = CycleTimer::currentSeconds();
-    cudaMemcpy(y, device_y, VSIZE * TIMESTEPS * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(y, device_y, vsize * T * sizeof(float), cudaMemcpyDeviceToHost);
     double overallDuration = endTime - startTime;
     
     return overallDuration;
