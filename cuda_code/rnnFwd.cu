@@ -19,7 +19,7 @@ inline void cudaAssert(cudaError_t code, const char *file, int line, bool abort=
 #endif
 
 #define TIMESTEPS 5
-#define HSIZE 30
+#define HSIZE 50
 #define VSIZE 8000
 
 // A is a by b
@@ -251,7 +251,7 @@ void forwardPass (float* device_x, float* device_a, float* device_h, float* devi
     const int threadsPerBlock = TIMESTEPS;
     const int blocks = 1;
 
-    // intermediate term
+    // intermediate terms
     float* h_tminus1; // = (float*) calloc(HSIZE, sizeof(float));
     cudaMalloc((void**) &h_tminus1, HSIZE * TIMESTEPS * sizeof(float));
     float* W_h; // = (float*) calloc(HSIZE, sizeof(float));
@@ -286,16 +286,26 @@ void forwardPassSequential (float* device_x, float* device_a, float* device_h, f
     const int blocks = 1;
 
     // intermediate terms
-    float* h_tminus1 = (float*) calloc(HSIZE, sizeof(float));
-    float* W_h = (float*) calloc(HSIZE, sizeof(float));
-    // float* x_t = (float*) calloc(VSIZE, sizeof(float));
-    float* U_x = (float*) calloc(HSIZE, sizeof(float));
-    float* add1 = (float*) calloc(HSIZE, sizeof(float));
-    float* a_t = (float*) calloc(VSIZE, sizeof(float));
-    float* h_t = (float*) calloc(HSIZE, sizeof(float));
-    float* V_h = (float*) calloc(VSIZE, sizeof(float));
-    float* o_t = (float*) calloc(HSIZE, sizeof(float));
-    float* y_t = (float*) calloc(VSIZE, sizeof(float));
+    float* h_tminus1; // = (float*) calloc(HSIZE, sizeof(float));
+    cudaMalloc((void**) &h_tminus1, HSIZE * TIMESTEPS * sizeof(float));
+    float* W_h; // = (float*) calloc(HSIZE, sizeof(float));
+    cudaMalloc((void**) &W_h, HSIZE * sizeof(float));
+    //float* x_t; // = (float*) calloc(VSIZE, sizeof(float));
+    //cudaMalloc((void**) &x_t, VSIZE * TIMESTEPS * sizeof(float));
+    float* U_x; // = (float*) calloc(HSIZE, sizeof(float));
+    cudaMalloc((void**) &U_x, HSIZE * TIMESTEPS * sizeof(float));
+    float* add1; //= //(float*) calloc(HSIZE, sizeof(float));
+    cudaMalloc((void**) &add1, HSIZE * sizeof(float));
+    float* a_t; //= (float*) calloc(VSIZE, sizeof(float));
+    cudaMalloc((void**) &a_t, VSIZE * TIMESTEPS * sizeof(float));
+    float* h_t; // = (float*) calloc(HSIZE, sizeof(float));
+    cudaMalloc((void**) &h_t, HSIZE * TIMESTEPS * sizeof(float));
+    float* V_h; // = (float*) calloc(VSIZE, sizeof(float));
+    cudaMalloc((void**) &V_h, VSIZE * TIMESTEPS * sizeof(float));
+    float* o_t;  //= (float*) calloc(HSIZE, sizeof(float));
+    cudaMalloc((void**) &o_t, HSIZE * TIMESTEPS * sizeof(float));
+    float* y_t; //= (float*) calloc(VSIZE, sizeof(float));
+    cudaMalloc((void**) &y_t, VSIZE * TIMESTEPS * sizeof(float));
 
     for (int i = 0; i < TIMESTEPS; i++) {
         kernelComputeForward<<< blocks, threadsPerBlock >>>(device_x, device_a, device_h, 

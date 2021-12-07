@@ -5,7 +5,7 @@
 #include <cstring>
 
 #define TIMESTEPS 5
-#define HSIZE 30
+#define HSIZE 50
 #define VSIZE 8000
 
 double cudaForwardPassTimer (float* x, float* y, float* U_host, float* V_host, float* W_host,
@@ -31,9 +31,6 @@ void init_param_values (float* U, float* V, float* W, float* b,
     
     for (int i1 = 0; i1 < max(HSIZE, VSIZE); i1++) {
 
-        // fprintf(stdout, "%d of %d outerloop: begun\n", i1, max(HSIZE, VSIZE));
-        // fflush(stdout);
-
         for (int i2 = 0; i2 < max(HSIZE, VSIZE); i2++) {
             if (i1 < HSIZE && i2 < VSIZE) {
                 supply_rand_val(&U[i1*VSIZE + i2]);
@@ -45,9 +42,6 @@ void init_param_values (float* U, float* V, float* W, float* b,
                 supply_rand_val(&W[i1*HSIZE + i2]);
             }
         }
-
-        // fprintf(stdout, "%d of %d outerloop: completed innerloop\n", i1, max(HSIZE, VSIZE));
-        // fflush(stdout);
 
         if (i1 < HSIZE) {
             supply_rand_val(&b[i1]);
