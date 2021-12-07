@@ -43,9 +43,7 @@ void matmul (float* A, float* B, float* AB, int a, int b, int c) {
 
 __device__
 void getExcerpt (float* A, float* dest, int timestep, int dimsize) {
-    printf("excerptgetting attempt, at index %d (max is %d for array)\n", timestep*dimsize, dimsize*5);
     memcpy(dest, &A[timestep*dimsize], dimsize*sizeof(float));
-    printf("%d index excerptgetting attempt complete\n", timestep*dimsize);
     return;
 }
 
@@ -56,14 +54,10 @@ float atomicCAS_f32(float *p, float cmp, float val) {
 
 __device__
 void setExcerpt (float* A, float* src, int timestep, int dimsize) {
-    printf("starting setexcerpt with %d vals to be set\n", dimsize);
     for (int i = 0; i < dimsize; i++) {
-        // A[timestep * dimsize + i] = src[i];
-        // while (atomicCAS_f32(&A[timestep * dimsize + i], -1, 5) != -1) ;
         atomicExch(&A[timestep * dimsize + i], 5);
     }
-    // memcpy(& A[timestep * dimsize], src, dimsize * sizeof(float));
-    printf("excerptsetting of %d vals complete\n", dimsize);
+    return;
 }
 
 __device__
@@ -158,8 +152,8 @@ float atomicCAS_f32_verbose(float *p, float cmp, float val, int thd_index) {
 __global__
 void kernelComputeForward (float* device_x, float* device_a, float* device_h, float* device_o, 
                             float* device_y, float* U, float* V, float* W, float* b, float* c,
-                            float* h_tminus1, float* W_h, float* x_t, float* U_x, float* add1,
-                            float* a_t, float* h_t, float* V_h, float* o_t, float* y_t, 
+                            float* h_tminus1_all, float* W_h_all, float* U_x_all, float* add1_all,
+                            float* a_t_all, float* h_t_all, float* V_h_all, float* o_t_all, float* y_t_all,
                             int sequential_index) {
     int index = 0;
     
@@ -167,40 +161,30 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
         index = sequential_index;
     } else {
         index = blockIdx.x * blockDim.x + threadIdx.x; // time index
-        if(index == 0){
-            printf("Thread %d executing, TIMESTEPS: %d\n", index, TIMESTEPS);
-        }
         if (index >= TIMESTEPS || index == 0) {
             return;
         }
     }
 
+    float* h_tminus1 = &h_tminus1_all[index*HSIZE];
+    float* W_h = &W_h_all[index*VSIZE];
+    float* U_x = &U_x_all[index*HSIZE];
+    float* add1 = &add1_all[index*HSIZE];
+    float* a_t = &a_t_all[index*VSIZE];
+    float* h_t = &h_t_all[index*HSIZE];
+    float* V_h = &a_t_all[index*VSIZE];
+    float* o_t = &o_t_all[index*HSIZE];
+    float* y_t = &y_t_all[index*VSIZE];
+
+    float* x_t = &device_x[index*VSIZE];
+
     // note: now threadsPerBlock = TIMESTEPS
     __shared__ float h_shared[HSIZE * TIMESTEPS];
-    
-    // if (index % threadsPerBlock == 0) {
-    //     for (int i = 0; i < min(threadsPerBlock, TIMESTEPS - index)) {
-    //         h_shared[i]
-    //     }
-    // }
 
-    // __syncthreads();
-
-    printf("Thread %d right before if statement\n", index);
     if (index > 0) {
-        printf("At time index %d, (HSIZE - 1) * index = %d, device_h is: %f\n", index, index * (HSIZE - 1), device_h[index * (HSIZE - 1)]);
-        // int loopcount = 0;
-        // while (device_h[index * (HSIZE - 1)] == -1.f) {
-        while ( atomicCAS_f32(&h_shared[index * (HSIZE - 1)], -1.f, -1.f) == -1 ) {
-            // printf("thd %d waiting for %f to change to naything other than -1\n", index, device_h[index * (HSIZE - 1)]);
-            //spin_little();
-            kernelSleep(10000);
-        }
-        // while ( atomicCAS(&device_h[index * (HSIZE - 1)], -1.f, -1.f) == -1 ) ; 
-        printf("thd %d: exiting waitloop\n ", index);
-        printf("thd %d: %f is checkval\n", index, device_h[index * (HSIZE - 1)] );
+        while ( atomicCAS_f32(&h_shared[index * (HSIZE - 1)], -1.f, -1.f) == -1 ) ;
     }  // spin til prev timestep's h-level vector has nondefault value (which indicates that the computation is pending
-    printf("Thread %d completed spin\n", index);
+
     
      
     // a[t] = b + W * h[t-1] + U * x[t]
@@ -219,16 +203,13 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
     } else {
         initOnes(h_tminus1, HSIZE, 1);
     }   
-    printf("%d-indexed thd completed getExcerpt (of step 1 for global h)\n", index); 
     matmul(W, h_tminus1, W_h, HSIZE, HSIZE, 1);
-    printf("%d-indexed thd completed matmul of W and h_tminus1\n", index);
     // 1b. the ux term
     getExcerpt(device_x, x_t, index, VSIZE);
     matmul(U, x_t, U_x, HSIZE, VSIZE, 1);
     // 1: addition of b
     vectorAdd(U_x, b, add1, HSIZE, 1);
     vectorAdd(add1, W_h, a_t, HSIZE, 1);
-    printf("%d-indexed thd completed comp1\n", index);
 
     // free(h_tminus1);
     // free(W_h);
@@ -238,36 +219,23 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
     // free(a_t) LATER
 
     // a_t has the result for the next layer (h)
-    // 2: tanh of vector for a_t
-    vectorTanh(a_t, h_t, HSIZE, 1);
-    // setExcerpt(device_h, h_t, index, HSIZE);
+    // 2a: tanh of vector for a_t
+    vectorTanh(a_t, h_t, HSIZE, 1);\
+    // 2b: set the excerpt
     for (int i = 0; i < HSIZE; i++) {
         h_shared[TIMESTEPS*index + i] = h_t[i];
     }
-
-    if (index == 1) {
-        printf("printing setting of thd 1\n");
-        for (int i = 0; i < HSIZE; i++) {
-            printf( "%f " , h_shared[TIMESTEPS*index + i] );
-        }
-        printf( "\n" );
-    }
-    printf("%d-indexed thd completed comp2\n", index);
-    // free(h_t) LATER
 
     // h_t has the result for the next layer(o)
     // 3: addition of V*h and c
     matmul(V, h_t, V_h, VSIZE, HSIZE, 1);
     vectorAdd(c, V_h, o_t, HSIZE, 1);
-    // setExcerpt(device_o, o_t, index, HSIZE);
-    printf("%d-indexed thd completed comp3\n", index);
     // free(o_t) LATER
 
     // o_t has the result for the next layer(o)
     // 4: softmax(o_t)
     vectorSoftmax(o_t, y_t, VSIZE, 1);
     setExcerpt(device_y, y_t, index, VSIZE);
-    printf("%d-indexed thd completed comp4\n", index);
     
     // free(a_t);
     // free(h_t);
@@ -285,29 +253,29 @@ void forwardPass (float* device_x, float* device_a, float* device_h, float* devi
 
     // intermediate term
     float* h_tminus1; // = (float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &h_tminus1, HSIZE * sizeof(float));
+    cudaMalloc((void**) &h_tminus1, HSIZE * TIMESTEPS * sizeof(float));
     float* W_h; // = (float*) calloc(HSIZE, sizeof(float));
     cudaMalloc((void**) &W_h, HSIZE * sizeof(float));
-    float* x_t; // = (float*) calloc(VSIZE, sizeof(float));
-    cudaMalloc((void**) &x_t, VSIZE * sizeof(float));
+    //float* x_t; // = (float*) calloc(VSIZE, sizeof(float));
+    //cudaMalloc((void**) &x_t, VSIZE * TIMESTEPS * sizeof(float));
     float* U_x; // = (float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &U_x, HSIZE * sizeof(float));
+    cudaMalloc((void**) &U_x, HSIZE * TIMESTEPS * sizeof(float));
     float* add1; //= //(float*) calloc(HSIZE, sizeof(float));
     cudaMalloc((void**) &add1, HSIZE * sizeof(float));
     float* a_t; //= (float*) calloc(VSIZE, sizeof(float));
-    cudaMalloc((void**) &a_t, VSIZE * sizeof(float));
+    cudaMalloc((void**) &a_t, VSIZE * TIMESTEPS * sizeof(float));
     float* h_t; // = (float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &h_t, HSIZE * sizeof(float));
+    cudaMalloc((void**) &h_t, HSIZE * TIMESTEPS * sizeof(float));
     float* V_h; // = (float*) calloc(VSIZE, sizeof(float));
-    cudaMalloc((void**) &V_h, VSIZE * sizeof(float));
+    cudaMalloc((void**) &V_h, VSIZE * TIMESTEPS * sizeof(float));
     float* o_t;  //= (float*) calloc(HSIZE, sizeof(float));
-    cudaMalloc((void**) &o_t, HSIZE * sizeof(float));
+    cudaMalloc((void**) &o_t, HSIZE * TIMESTEPS * sizeof(float));
     float* y_t; //= (float*) calloc(VSIZE, sizeof(float));
-    cudaMalloc((void**) &y_t, VSIZE * sizeof(float)); 
+    cudaMalloc((void**) &y_t, VSIZE * TIMESTEPS * sizeof(float));  
 
     kernelComputeForward<<< blocks, threadsPerBlock >>>(device_x, device_a, device_h, 
                                                         device_o, device_y, U, V, W, b, c, 
-                                                        h_tminus1, W_h, x_t, U_x,
+                                                        h_tminus1, W_h, U_x,
                                                         add1, a_t, h_t, V_h, o_t, y_t,
                                                         -1);
 }
@@ -320,7 +288,7 @@ void forwardPassSequential (float* device_x, float* device_a, float* device_h, f
     // intermediate terms
     float* h_tminus1 = (float*) calloc(HSIZE, sizeof(float));
     float* W_h = (float*) calloc(HSIZE, sizeof(float));
-    float* x_t = (float*) calloc(VSIZE, sizeof(float));
+    // float* x_t = (float*) calloc(VSIZE, sizeof(float));
     float* U_x = (float*) calloc(HSIZE, sizeof(float));
     float* add1 = (float*) calloc(HSIZE, sizeof(float));
     float* a_t = (float*) calloc(VSIZE, sizeof(float));
@@ -332,7 +300,7 @@ void forwardPassSequential (float* device_x, float* device_a, float* device_h, f
     for (int i = 0; i < TIMESTEPS; i++) {
         kernelComputeForward<<< blocks, threadsPerBlock >>>(device_x, device_a, device_h, 
                                                             device_o, device_y, U, V, W, b, c, 
-                                                            h_tminus1, W_h, x_t, U_x,
+                                                            h_tminus1, W_h, U_x,
                                                             add1, a_t, h_t, V_h, o_t, y_t,
                                                             i);
     }
