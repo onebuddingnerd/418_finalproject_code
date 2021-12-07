@@ -45,13 +45,20 @@ void getExcerpt (float* A, float* dest, int timestep, int dimsize) {
     return;
 }
 
+__device__ 
+float atomicCAS_f32(float *p, float cmp, float val) {
+    return __int_as_float(atomicCAS((int *) p, __float_as_int(cmp), __float_as_int(val)));
+}
+
 __device__
 void setExcerpt (float* A, float* src, int timestep, int dimsize) {
     printf("starting setexcerpt with %d vals to be set\n", dimsize);
-    // for (int i = 0; i < dimsize; i++) {
-    //     A[timestep * dimsize + i] = src[i];
-    // }
-    memcpy(& A[timestep * dimsize], src, dimsize * sizeof(float));
+    for (int i = 0; i < dimsize; i++) {
+        // A[timestep * dimsize + i] = src[i];
+        // while (atomicCAS_f32(&A[timestep * dimsize + i], -1, 5) != -1) ;
+        atomicExch(&A[timestep * dimsize + i], 5);
+    }
+    // memcpy(& A[timestep * dimsize], src, dimsize * sizeof(float));
     printf("excerptsetting of %d vals complete\n", dimsize);
 }
 
@@ -105,11 +112,13 @@ void host_initOnes (float* A, int a, int b) {
     return;
 }
 
-__device__
-void spin_little () {
-    int i = 0;
-    while (i++ < 10000000000) ;
-    return;
+typedef long long cycles_t;
+__device__ void kernelSleep(cycles_t sleep_cycles)
+{
+    cycles_t start = clock64();
+    cycles_t cycles_elapsed;
+    do { cycles_elapsed = clock64() - start; } 
+    while (cycles_elapsed < sleep_cycles);
 }
 
 __device__
@@ -122,12 +131,33 @@ void print_excerpt(float* A, int start, int til) {
     return;
 }
 
+/*
+ * reference: https://gist.github.com/PolarNick239/5e370892989800fe42154145911b141f
+ * this funciton allows us to use atomicCAS with floats
+ */
+__device__ 
+float atomicCAS_f32_verbose(float *p, float cmp, float val, int thd_index) { 
+    if (thd_index == 2) {
+        printf("thd 2 calling CAS wrapper-------------------------------------\n");
+    } else {
+        printf("thd %d calling CAS wrapper\n", thd_index);
+    }
+	float ret = __int_as_float(atomicCAS((int *) p, __float_as_int(cmp), __float_as_int(val)));
+    if (thd_index == 2) {
+        printf("thd 2 completed CAS wrapper-------------------------------------\n");
+    } else {
+        printf("thd %d completed CAS wrapper\n", thd_index);
+    }
+    return ret;
+}
+
 __global__
 void kernelComputeForward (float* device_x, float* device_a, float* device_h, float* device_o, 
                             float* device_y, float* U, float* V, float* W, float* b, float* c,
                             float* h_tminus1, float* W_h, float* x_t, float* U_x, float* add1,
                             float* a_t, float* h_t, float* V_h, float* o_t, float* y_t,
-                            int hsize, int vsize, int timesteps, int sequential_index) {
+                            int hsize, int vsize, int timesteps, int threadsPerBlock, 
+                            int sequential_index) {
     int index = 0;
     
     if (sequential_index > -1) {
@@ -142,18 +172,26 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
         }
     }
 
+    // __shared__ float h_shared[hsize * threadsPerBlock];
+    // if (index % threadsPerBlock == 0) {
+    //     for (int i = 0; i < min(threadsPerBlock, timesteps - index)) {
+    //         h_shared[i]
+    //     }
+    // }
+
     // __syncthreads();
 
     printf("Thread %d right before if statement\n", index);
     if (index > 0) {
         printf("At time index %d, (hsize - 1) * index = %d, device_h is: %f\n", index, index * (hsize - 1), device_h[index * (hsize - 1)]);
-        int loopcount = 0;
-        while (device_h[index * (hsize - 1)] == -1.f) {
-            if (loopcount++ % 10000000 == 0) {
-                printf("thd %d waiting for %f to change to naything other than -1\n", index, device_h[index * (hsize - 1)]);
-                //spin_little();
-            }
+        // int loopcount = 0;
+        // while (device_h[index * (hsize - 1)] == -1.f) {
+        while ( atomicCAS_f32(&device_h[index * (hsize - 1)], -1.f, -1.f) == -1 ) {
+            // printf("thd %d waiting for %f to change to naything other than -1\n", index, device_h[index * (hsize - 1)]);
+            //spin_little();
+            kernelSleep(10000);
         }
+        // while ( atomicCAS(&device_h[index * (hsize - 1)], -1.f, -1.f) == -1 ) ; 
         printf("thd %d: exiting waitloop\n ", index);
         printf("thd %d: %f is checkval\n", index, device_h[index * (hsize - 1)] );
     }  // spin til prev timestep's h-level vector has nondefault value (which indicates that the computation is pending
@@ -234,7 +272,7 @@ void forwardPass (float* device_x, float* device_a, float* device_h, float* devi
     const int threadsPerBlock = 2;
     const int blocks = (T + threadsPerBlock - 1) / threadsPerBlock;
 
-    // intermediate terms
+    // intermediate term
     float* h_tminus1; // = (float*) calloc(hsize, sizeof(float));
     cudaMalloc((void**) &h_tminus1, hsize * sizeof(float));
     float* W_h; // = (float*) calloc(hsize, sizeof(float));
@@ -260,7 +298,7 @@ void forwardPass (float* device_x, float* device_a, float* device_h, float* devi
                                                         device_o, device_y, U, V, W, b, c, 
                                                         h_tminus1, W_h, x_t, U_x,
                                                         add1, a_t, h_t, V_h, o_t, y_t,
-                                                        hsize, vsize, T,
+                                                        hsize, vsize, T, threadsPerBlock,
                                                         -1);
 }
 
@@ -287,7 +325,7 @@ void forwardPassSequential (float* device_x, float* device_a, float* device_h, f
                                                             device_o, device_y, U, V, W, b, c, 
                                                             h_tminus1, W_h, x_t, U_x,
                                                             add1, a_t, h_t, V_h, o_t, y_t,
-                                                            hsize, vsize, T,
+                                                            hsize, vsize, T, threadsPerBlock,
                                                             i);
     }
 }
