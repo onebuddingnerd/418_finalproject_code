@@ -8,8 +8,9 @@
 #include <cmath>
 #include <math.h>
 #include <chrono>
+#include <omp.h>
 
-#define TIMESTEPS 5
+#define TIMESTEPS 600
 #define HSIZE 50
 #define VSIZE 8000
 
@@ -85,10 +86,22 @@ void vectorSoftmax(float* src, float* dest, int a, int b) {
 }
 
 float* openmp_fwd_pass (float* all_h, int t, float* b, float* U, 
-                        float* V, float* W, float* x, float* c) {
+                        float* V, float* W, float* x, float* c,
+                        int* timestep_wait_vector, int par_flag) {
 
     float* h_tminus1 = (float*) calloc(HSIZE, sizeof(float));
     getExcerpt(all_h, h_tminus1, t-1, HSIZE);
+    
+    int spin_val = 0;
+    if (par_flag) {
+        # pragma omp atomic read
+            spin_val = timestep_wait_vector[t] ;
+        while (spin_val == 0) { 
+            for (int i = 0; i < 1000000; i++) ;
+            # pragma omp atomic read
+                spin_val = timestep_wait_vector[t] ;
+        } 
+    }
 
     float* a_t = (float*) calloc(HSIZE, sizeof(float));
     float* x_t = x + HSIZE*t;
@@ -109,6 +122,13 @@ float* openmp_fwd_pass (float* all_h, int t, float* b, float* U,
     float* h_t = (float*) calloc(HSIZE, sizeof(float));
     vectorTanh(a_t, h_t, HSIZE, 1);
     setExcerpt(all_h, h_t, t, HSIZE);
+    
+    if (par_flag) {
+        if (t < TIMESTEPS) {
+            # pragma omp atomic update
+                timestep_wait_vector[t + 1] ++;
+        }
+    }
 
     // fprintf(stderr, "timestep %d: completed setting h\n", t);
 
@@ -165,6 +185,8 @@ void init_input_values (float* x) {
 
 int main(int argc, const char *argv[]) {
 
+    int num_of_threads = atoi(argv[1]);
+
     float* x = (float*) calloc(VSIZE * TIMESTEPS, sizeof(float));
     // float* y = (float*) calloc(VSIZE * TIMESTEPS, sizeof(float));
     float* U = (float*) calloc(HSIZE * VSIZE, sizeof(float));
@@ -177,8 +199,16 @@ int main(int argc, const char *argv[]) {
     init_param_values(U, V, W, b, c); // random generation of values that
                                                     // could plausibly be computed during training
 
+
     // alloc h
     float* all_h = (float*) calloc( TIMESTEPS * HSIZE , sizeof(float) );
+
+    int* timestep_wait_vector = (int*) calloc(TIMESTEPS, sizeof(int));
+    float* h_0_vals = (float*) calloc(HSIZE, sizeof(float));
+    memset(h_0_vals, 1, sizeof(float)*HSIZE);
+    setExcerpt(all_h, h_0_vals, 0, HSIZE);
+    free(h_0_vals);
+    timestep_wait_vector[0] = 1;
 
     using namespace std::chrono;
     typedef std::chrono::high_resolution_clock Clock;
@@ -189,25 +219,28 @@ int main(int argc, const char *argv[]) {
 
     // #pragma omp parallel for default(shared) schedule(static)
     for (int t = 0; t < TIMESTEPS; t++) {
-        float* y_t = openmp_fwd_pass(all_h, t, b, U, V, W, x, c);
+        float* y_t = openmp_fwd_pass(all_h, t, b, U, V, W, x, c,
+                                      timestep_wait_vector, 0);
         //setExcerpt(y, y_t, t, VSIZE);
         free (y_t);
     }
 
     loop_time += duration_cast<dsec>(Clock::now() - loop_start).count();
-    fprintf(stderr, "par time: %f\n", loop_time);
+    fprintf(stderr, "seq time: %f\n", loop_time);
 
     auto loop_start1 = Clock::now();
     double loop_time1 = 0.f;
 
+    omp_set_num_threads(num_of_threads);
     #pragma omp parallel for default(shared) schedule(static)
     for (int t = 0; t < TIMESTEPS; t++) {
-        float* y_t = openmp_fwd_pass(all_h, t, b, U, V, W, x, c);
+        float* y_t = openmp_fwd_pass(all_h, t, b, U, V, W, x, c, 
+                                      timestep_wait_vector, 1);
         //setExcerpt(y, y_t, t, VSIZE);
         free (y_t);
     }
 
     loop_time1 += duration_cast<dsec>(Clock::now() - loop_start1).count();
-    fprintf(stderr, "seq time: %f\n", loop_time1);
+    fprintf(stderr, "par time: %f\n", loop_time1);
 
 }
