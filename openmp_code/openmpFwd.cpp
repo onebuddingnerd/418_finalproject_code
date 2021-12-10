@@ -21,6 +21,14 @@ int max (int a, int b) {
     return b;
 }
 
+int min (int a, int b) {
+    if (max(a, b) == a) {
+        return b;
+    }
+    
+    return a;
+}
+
 void supply_rand_val (float* addr) {
     float ret = static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
     *addr = ret;
@@ -50,6 +58,14 @@ void setExcerpt (float* A, float* src, int timestep, int dimsize) {
     for (int i = 0; i < dimsize; i++) {
         # pragma omp atomic write
             A[timestep * dimsize + i] = src[i];
+    }
+}
+
+void forwardFill (float* A, float* src, int timestep, int dimsize,
+                  int index_adv) {
+    int fill_til = timestep + index_adv;
+    for (int t = timestep; t < min(fill_til, TIMESTEPS); t++) {
+        setExcerpt(A, src, t, dimsize);
     }
 }
 
@@ -121,12 +137,26 @@ float* openmp_fwd_pass (float* all_h, int t, float* b, float* U,
 
     float* h_t = (float*) calloc(HSIZE, sizeof(float));
     vectorTanh(a_t, h_t, HSIZE, 1);
-    setExcerpt(all_h, h_t, t, HSIZE);
+    if (par_flag) {
+        // float av = 0;
+        // for (int i = 0; i < HSIZE; i++) {
+        //     av += h_t[i];
+        // }
+        // av /= HSIZE;
+        // for (int i = 0; i < HSIZE; i++) {
+        //     h_t[i] = av;
+        // }
+        forwardFill(all_h, h_t, t, HSIZE, 15);
+    } else {
+        setExcerpt(all_h, h_t, t, HSIZE);
+    }
     
     if (par_flag) {
         if (t < TIMESTEPS) {
-            # pragma omp atomic update
-                timestep_wait_vector[t + 1] ++;
+            for (int i = 0; i < 15; i++) {
+                # pragma omp atomic update
+                    timestep_wait_vector[t + 1 + i] ++;
+            }
         }
     }
 
