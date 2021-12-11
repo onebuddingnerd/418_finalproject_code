@@ -4,7 +4,7 @@
 #include <string>
 #include <cstring>
 
-#define TIMESTEPS 5
+#define TIMESTEPS 500
 #define HSIZE 50
 #define VSIZE 8000
 

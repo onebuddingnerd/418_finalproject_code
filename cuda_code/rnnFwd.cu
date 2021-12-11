@@ -3,6 +3,8 @@
 #include <math.h>
 #include "CycleTimer.h"
 
+// error-checking wrapper for CUDA
+// source: 15-418 at CMU, assignment 2
 #define DEBUG
 #ifdef DEBUG
 #define cudaCheckError(ans) cudaAssert((ans), __FILE__, __LINE__);
@@ -22,10 +24,12 @@ inline void cudaAssert(cudaError_t code, const char *file, int line, bool abort=
 #define HSIZE 50
 #define VSIZE 8000
 
+// matrix multiplication (faster than using library function);
+// operates on inputs/output destination pointer with following
+// dimensions:
 // A is a by b
 // B is b by c
 // AB is a by c
-
 __device__
 void matmul (float* A, float* B, float* AB, int a, int b, int c) {
 
@@ -41,17 +45,23 @@ void matmul (float* A, float* B, float* AB, int a, int b, int c) {
     
 }
 
+// get dimsize worth of contiguous values in memory pointed to by A and place them 
+// into dest
 __device__
 void getExcerpt (float* A, float* dest, int timestep, int dimsize) {
     memcpy(dest, &A[timestep*dimsize], dimsize*sizeof(float));
     return;
 }
 
+// atomic CAS but for floats (reference included in URL of the heading
+// for verbose version of function)
 __device__ 
 float atomicCAS_f32(float *p, float cmp, float val) {
     return __int_as_float(atomicCAS((int *) p, __float_as_int(cmp), __float_as_int(val)));
 }
 
+// device version of function that sets a particular dimsize worth of
+// contiguous values in A to equal those in src
 __device__
 void setExcerpt (float* A, float* src, int timestep, int dimsize) {
     for (int i = 0; i < dimsize; i++) {
@@ -60,6 +70,8 @@ void setExcerpt (float* A, float* src, int timestep, int dimsize) {
     return;
 }
 
+// adds the values pointed to by A to those pointed to by B and
+// stores the result in AplusB
 __device__
 void vectorAdd (float* A, float* B, float* AplusB, int a, int b) {
     for (int i = 0; i < a; i++) {
@@ -69,6 +81,10 @@ void vectorAdd (float* A, float* B, float* AplusB, int a, int b) {
     }
 }
 
+// computes the tanh of each element in the vector pointed to by A
+// and stores the result in ret
+// note: uses loop nesting for indexing clarity when invoked on
+// a pointer A that represents an array
 __device__
 void vectorTanh (float* A, float* ret, int a, int b) {
     for (int i = 0; i < a; i++) {
@@ -78,6 +94,9 @@ void vectorTanh (float* A, float* ret, int a, int b) {
     }
 }
 
+// computes a softmax softmax over a vector pointed to by src
+// and places the result of the computation into a vector
+// pointed to by dest
 __device__
 void vectorSoftmax(float* src, float* dest, int a, int b) {
     float denom = 0;
@@ -95,6 +114,7 @@ void vectorSoftmax(float* src, float* dest, int a, int b) {
     return;
 }
 
+// device version of the funciton directly below
 __device__ 
 void initOnes (float* A, int a, int b) {
     for (int i = 0; i < a*b; i++) {
@@ -103,6 +123,7 @@ void initOnes (float* A, int a, int b) {
     return;
 }
 
+// just initializing the memory pointed to by A to 1-values
 void host_initOnes (float* A, int a, int b) {
     for (int i = 0; i < a*b; i++) {
         A[i] = 1;
@@ -110,6 +131,7 @@ void host_initOnes (float* A, int a, int b) {
     return;
 }
 
+// a sleeping function (since the C library function doesn't work that well)
 typedef long long cycles_t;
 __device__ void kernelSleep(cycles_t sleep_cycles)
 {
@@ -119,6 +141,8 @@ __device__ void kernelSleep(cycles_t sleep_cycles)
     while (cycles_elapsed < sleep_cycles);
 }
 
+// debugging function: printing a certain subset of a contiguous block of memerg
+// pointed to by A
 __device__
 void print_excerpt(float* A, int start, int til) {
     for ( int i = start; i < til; i++ ) {
@@ -132,6 +156,7 @@ void print_excerpt(float* A, int start, int til) {
 /*
  * reference: https://gist.github.com/PolarNick239/5e370892989800fe42154145911b141f
  * this funciton allows us to use atomicCAS with floats
+ * some printf statements were added for debugging
  */
 __device__ 
 float atomicCAS_f32_verbose(float *p, float cmp, float val, int thd_index) { 
@@ -211,6 +236,7 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
     vectorAdd(U_x, b, add1, HSIZE, 1);
     vectorAdd(add1, W_h, a_t, HSIZE, 1);
 
+    // frees that are omitted in the interest of speed
     // free(h_tminus1);
     // free(W_h);
     // free(U_x);
@@ -237,6 +263,7 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
     vectorSoftmax(o_t, y_t, VSIZE, 1);
     setExcerpt(device_y, y_t, index, VSIZE);
     
+    // more frees that are omitted in the interest of speed
     // free(a_t);
     // free(h_t);
     // free(o_t);
@@ -245,7 +272,7 @@ void kernelComputeForward (float* device_x, float* device_a, float* device_h, fl
 
 }
 
-
+// parallel forwardPass on the input and already-computed parameter values
 void forwardPass (float* device_x, float* device_a, float* device_h, float* device_o, 
                   float* device_y, float* U, float* V, float* W, float* b, float* c) {
     const int threadsPerBlock = TIMESTEPS;
@@ -280,6 +307,7 @@ void forwardPass (float* device_x, float* device_a, float* device_h, float* devi
                                                         -1);
 }
 
+// sequential version of the forwardPass function (1 thread, 1 block)
 void forwardPassSequential (float* device_x, float* device_a, float* device_h, float* device_o, 
                   float* device_y, float* U, float* V, float* W, float* b, float* c) {
     const int threadsPerBlock = 1;
@@ -291,7 +319,6 @@ void forwardPassSequential (float* device_x, float* device_a, float* device_h, f
     float* W_h; // = (float*) calloc(HSIZE, sizeof(float));
     cudaMalloc((void**) &W_h, HSIZE * sizeof(float));
     //float* x_t; // = (float*) calloc(VSIZE, sizeof(float));
-    //cudaMalloc((void**) &x_t, VSIZE * TIMESTEPS * sizeof(float));
     float* U_x; // = (float*) calloc(HSIZE, sizeof(float));
     cudaMalloc((void**) &U_x, HSIZE * TIMESTEPS * sizeof(float));
     float* add1; //= //(float*) calloc(HSIZE, sizeof(float));
@@ -316,6 +343,7 @@ void forwardPassSequential (float* device_x, float* device_a, float* device_h, f
     }
 }
 
+// device version of function directly below
 __global__
 void kernelSetToValAfter (float* A, int n, float val, int offset) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -325,6 +353,7 @@ void kernelSetToValAfter (float* A, int n, float val, int offset) {
     A[index] = val;
 }
 
+// sets all indices in A to a given value val (after an offset number of indices)
 void setToValAfter (float* A, int n, float val, int offset) {
     const int threadsPerBlock = 512;
     const int blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
@@ -333,6 +362,8 @@ void setToValAfter (float* A, int n, float val, int offset) {
 
 }
 
+/*  wrap the (otherwise-almost-empty wrapper of) the kernel launch (forwardPass)
+    in a timer  */
 double cudaForwardPassTimer (float* x, float* y, float* U_host, float* V_host, float* W_host,
                               float* b_host, float* c_host) {
     float* device_x;

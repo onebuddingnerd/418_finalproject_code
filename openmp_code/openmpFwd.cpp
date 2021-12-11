@@ -10,10 +10,12 @@
 #include <chrono>
 #include <omp.h>
 
-#define TIMESTEPS 600
-#define HSIZE 50
-#define VSIZE 8000
+#define TIMESTEPS 900
+#define HSIZE 10
+#define VSIZE 800
 
+// three functions copied over from setup code (on host)
+// in our CUDA implementation (in the ../cuda_code folder)
 int max (int a, int b) {
     if (a > b) {
         return a;
@@ -34,7 +36,9 @@ void supply_rand_val (float* addr) {
     *addr = ret;
 }
 
-
+/* the next three functions are documented in 
+  ../cuda_code folder (in the rnnFwd.cu file)
+*/
 void matmul (float* A, float* B, float* AB, int a, int b, int c) {
 
     for (int i = 0; i < a; i++) {
@@ -61,6 +65,9 @@ void setExcerpt (float* A, float* src, int timestep, int dimsize) {
     }
 }
 
+// a looping setExcerpt, used to propagate the values from a
+// particular timestep's hidden layer computation to
+// that of index_adv subsequent hidden layers
 void forwardFill (float* A, float* src, int timestep, int dimsize,
                   int index_adv) {
     int fill_til = timestep + index_adv;
@@ -69,6 +76,9 @@ void forwardFill (float* A, float* src, int timestep, int dimsize,
     }
 }
 
+/* the next three functions are documented in 
+  ../cuda_code folder (in the rnnFwd.cu file)
+*/
 void vectorAdd (float* A, float* B, float* AplusB, int a, int b) {
     for (int i = 0; i < a; i++) {
         for (int j = 0; j < b; j++) {
@@ -101,6 +111,11 @@ void vectorSoftmax(float* src, float* dest, int a, int b) {
     return;
 }
 
+// the function that completes each thread's forward-pass computations,
+// called from within a mainloop that computes the output neurons
+// for all timesteps' data
+// importantly, par_flag distinguishes whether the exeuction should be
+// sequential (when it's 0) or parallel (when it's 1)
 float* openmp_fwd_pass (float* all_h, int t, float* b, float* U, 
                         float* V, float* W, float* x, float* c,
                         int* timestep_wait_vector, int par_flag) {
@@ -138,14 +153,6 @@ float* openmp_fwd_pass (float* all_h, int t, float* b, float* U,
     float* h_t = (float*) calloc(HSIZE, sizeof(float));
     vectorTanh(a_t, h_t, HSIZE, 1);
     if (par_flag) {
-        // float av = 0;
-        // for (int i = 0; i < HSIZE; i++) {
-        //     av += h_t[i];
-        // }
-        // av /= HSIZE;
-        // for (int i = 0; i < HSIZE; i++) {
-        //     h_t[i] = av;
-        // }
         forwardFill(all_h, h_t, t, HSIZE, 15);
     } else {
         setExcerpt(all_h, h_t, t, HSIZE);
@@ -178,6 +185,12 @@ float* openmp_fwd_pass (float* all_h, int t, float* b, float* U,
 
 }
 
+/*
+  next two functions are copied from ../cuda_code/main.cpp
+  they initialize random values (random as per the cpp library)
+  to mimic plausible inputs and parameter values computed 
+  during training time
+ */
 void init_param_values (float* U, float* V, float* W, float* b,
                     float* c) {
     
@@ -213,6 +226,8 @@ void init_input_values (float* x) {
 
 }
 
+// the mainloop that executes the forward pass both in 
+// parallel and sequentially
 int main(int argc, const char *argv[]) {
 
     int num_of_threads = atoi(argv[1]);
