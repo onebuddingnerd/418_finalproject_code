@@ -4,7 +4,7 @@ Source code for "Parallelization of Inference on Recurrent Neural Networks"
 
 # Website
 
-https://lmishr.github.io/15418_project.html
+https://onebuddingnerd.github.io/418-react
 
 # File Structure and Usage
 
